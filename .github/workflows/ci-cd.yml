@@ -60,18 +60,23 @@ jobs:
 
       - name: Update manifest image tag
         run: |
+          set -euxo pipefail
+
           TAG="${{ needs.build_and_push.outputs.tag }}"
           FILE="deploy/apps/devops-test/dev/app.yml"
 
-          echo "Updating $FILE to tag $TAG"
+          echo "Before:"
+          grep -n "image:" "$FILE" || true
 
-          # image: .../devops-test[:OLDTAG]  satırını yakalar
-          # REPLACE_ME dahil her şeyi tek seferde :TAG yapar
-          sed -i -E "s|(image:\\s*.*\\/${{ env.IMAGE_NAME }})(:[^ ]+)?|\\1:${TAG}|g" "$FILE"
+          # image satırını komple güvenli şekilde güncelle (REPLACE_ME ya da eski tag fark etmez)
+          sed -i -E \
+            "s|(image:\s*${{ env.REGION }}-docker\.pkg\.dev/${{ secrets.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:).*|\1${TAG}|g" \
+            "$FILE"
 
-          echo "---- Updated manifest (image line) ----"
-          grep -n "image:" "$FILE"
-          echo "--------------------------------------"
+          echo "After:"
+          grep -n "image:" "$FILE" || true
+
+          echo "Full file:"
           cat "$FILE"
 
       - name: Commit & push to deploy repo
