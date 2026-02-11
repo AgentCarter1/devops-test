@@ -1,0 +1,90 @@
+name: CI-CD (Build, Push, Deploy via ArgoCD)
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: europe-west1
+  REPOSITORY: xp-repo
+  IMAGE_NAME: devops-test
+
+jobs:
+  build_and_push:
+    environment: DEPLOY
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+
+      - name: Compute image tag (short SHA)
+        id: meta
+        run: echo "tag=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Auth to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build & Push Docker image
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ secrets.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}"
+          echo "Building $IMAGE"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+  update_deploy_repo:
+    environment: DEPLOY
+    needs: build_and_push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deploy repo
+        uses: actions/checkout@v4
+        with:
+          repository: AgentCarter1/devops-test-deploy
+          token: ${{ secrets.DEPLOY_REPO_TOKEN }}
+          path: deploy
+
+      - name: Update manifest image tag
+        run: |
+          TAG="${{ needs.build_and_push.outputs.tag }}"
+          FILE="deploy/apps/devops-test/dev/app.yml"
+
+          echo "Updating $FILE to tag $TAG"
+
+          # 1) REPLACE_ME varsa onu değiştir
+          sed -i "s|${{ env.IMAGE_NAME }}:REPLACE_ME|${{ env.IMAGE_NAME }}:${TAG}|g" "$FILE"
+
+          # 2) Daha önce tag yazıldıysa (7 haneli sha) onu da güncelle
+          sed -i -E "s|(${{
+            env.REGION
+          }}-docker\.pkg\.dev/${{ secrets.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:)[a-f0-9]{7}|\1${TAG}|g" "$FILE"
+
+          echo "---- Updated manifest ----"
+          cat "$FILE"
+
+      - name: Commit & push to deploy repo
+        run: |
+          cd deploy
+          git config user.name "devops-bot"
+          git config user.email "devops-bot@users.noreply.github.com"
+
+          git add apps/devops-test/dev/app.yml
+
+          # Değişiklik yoksa fail etmesin
+          git commit -m "dev: bump devops-test image to ${{ needs.build_and_push.outputs.tag }}" || echo "No changes to commit"
+
+          git push
