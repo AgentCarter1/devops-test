@@ -65,15 +65,13 @@ jobs:
 
           echo "Updating $FILE to tag $TAG"
 
-          # 1) REPLACE_ME varsa onu değiştir
-          sed -i "s|${{ env.IMAGE_NAME }}:REPLACE_ME|${{ env.IMAGE_NAME }}:${TAG}|g" "$FILE"
+          # image: .../devops-test[:OLDTAG]  satırını yakalar
+          # REPLACE_ME dahil her şeyi tek seferde :TAG yapar
+          sed -i -E "s|(image:\\s*.*\\/${{ env.IMAGE_NAME }})(:[^ ]+)?|\\1:${TAG}|g" "$FILE"
 
-          # 2) Daha önce tag yazıldıysa (7 haneli sha) onu da güncelle
-          sed -i -E "s|(${{
-            env.REGION
-          }}-docker\.pkg\.dev/${{ secrets.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:)[a-f0-9]{7}|\1${TAG}|g" "$FILE"
-
-          echo "---- Updated manifest ----"
+          echo "---- Updated manifest (image line) ----"
+          grep -n "image:" "$FILE"
+          echo "--------------------------------------"
           cat "$FILE"
 
       - name: Commit & push to deploy repo
@@ -84,7 +82,5 @@ jobs:
 
           git add apps/devops-test/dev/app.yml
 
-          # Değişiklik yoksa fail etmesin
           git commit -m "dev: bump devops-test image to ${{ needs.build_and_push.outputs.tag }}" || echo "No changes to commit"
-
           git push
