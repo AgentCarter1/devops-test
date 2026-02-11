@@ -1,0 +1,43 @@
+name: Build and Push Image
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: project-c5f72c1b-6454-456f-bc4
+  REGION: europe-west1
+  REPO: xp-repo
+  IMAGE_NAME: devops-test
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to Google Cloud (OIDC)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/9788881395/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          service_account: "gha-devops-test@project-c5f72c1b-6454-456f-bc4.iam.gserviceaccount.com"
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and Push
+        run: |
+          TAG=${GITHUB_SHA::7}
+          IMAGE_URI=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE_NAME }}:${TAG}
+          echo "Pushing $IMAGE_URI"
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
