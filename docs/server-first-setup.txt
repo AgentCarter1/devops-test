@@ -1,0 +1,46 @@
+1) Deployment (Swarm’daki service gibi)
+
+Kubernetes’e dedik ki: “Bu image’ı çalıştır, 1 replica olsun.”
+
+K8s node üzerinde Pod oluşturdu (container’ı çalıştırdı).
+
+Swarm karşılığı:
+
+docker service create --replicas 1 --image ...
+
+2) Service: LoadBalancer (Swarm’da publish + cloud LB gibi)
+
+“Bu deployment’a gelen trafiği dışarı aç.”
+
+GCP bir External Load Balancer oluşturdu ve sana IP verdi: 104.199.38.241
+
+Port map:
+
+Dış dünya: 80
+
+İçerde container: 8080
+
+Swarm karşılığı:
+
+--publish 80:8080 + (cloud provider LB)
+
+Kontrol komutların (notluk)
+
+Pod’lar:
+
+kubectl -n dev get pods
+
+
+Log:
+
+kubectl -n dev logs deploy/devops-test --tail=200
+
+
+Service + IP:
+
+kubectl -n dev get svc devops-test
+
+
+Dış test:
+
+curl -i http://104.199.38.241/

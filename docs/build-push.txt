@@ -1,0 +1,218 @@
+
+Connect Kubernetes.
+
+1.
+gcloud artifacts repositories create xp-repo \
+  --repository-format=docker \
+  --location=europe-west1 \
+  --description="Docker images for xp"
+
+2.
+gcloud artifacts repositories list --location=europe-west1
+
+3.
+gcloud auth configure-docker europe-west1-docker.pkg.dev
+
+Tabii kanka — burası çok önemli. Şu ana kadar yaptığımız “image build + push” kısmını neden yaptık / ne yaşadık / nasıl çözdük şeklinde notluk, adım adım yazıyorum. (Swarm karşılığıyla da ilişkilendirdim.)
+
+Amaç neydi?
+
+Kubernetes (ve Argo CD/GitOps) dünyasında deploy’un temel girdisi şudur:
+
+Uygulamanın Docker image’ı hazır olacak
+
+Bu image bir registry’ye (Docker Hub / private registry) push edilmiş olacak
+
+Kubernetes, deploy ederken “şu image’ı çek ve çalıştır” der
+
+📌 Swarm karşılığı:
+
+Swarm: docker build → docker push → docker service create --image ...
+
+K8s: docker build → docker push → Deployment image: ...
+
+Bizim hedef: “Kubernetes çalıştıracak bir image üretmek ve onu GCP’deki registry’ye koymak”.
+
+Biz ne yaptık? (Adım adım)
+1) GCP’de registry hazırladık (Artifact Registry)
+
+Neden? Docker Hub yerine GCP’nin kendi private registry’si.
+
+Repo oluşturduk:
+
+xp-repo (location: europe-west1)
+
+Böylece image’ların gideceği yer oluştu.
+
+📌 Swarm karşılığı: “Harbor / private registry kurdum” veya “Docker Hub repo açtım”.
+
+2) Docker’ın bu registry’ye push atabilmesi için auth ayarladık
+
+Komut:
+
+gcloud auth configure-docker europe-west1-docker.pkg.dev
+
+Neden? Cloud Shell’de docker push yapınca şifre sormasın diye.
+
+📌 Swarm karşılığı: docker login.
+
+3) Projeyi Cloud Shell’e aldık (git clone)
+
+Komut:
+
+git clone ...
+
+cd devops-test
+
+ls ile Dockerfile’ı doğruladık.
+
+Neden? Cloud Shell’de build alabilmek için kod lazım.
+
+4) Image adını “GCP registry formatında” belirledik
+
+Image URI’yi böyle oluşturduk:
+
+europe-west1-docker.pkg.dev/<PROJECT_ID>/xp-repo/devops-test:v1
+
+
+Bunu env değişkenleriyle set ettik:
+
+PROJECT_ID, REGION, REPO, IMAGE_NAME, TAG
+
+IMAGE_URI=...
+
+Neden? Registry’ye push atabilmek için image ismi doğru formatta olmalı.
+
+📌 Swarm karşılığı: my-registry.local/app:tag şeklinde image taglemek.
+
+5) Local build aldık (başardı)
+
+Komut:
+
+docker build -t $IMAGE_URI .
+
+✅ Bu kısım çalıştı.
+
+6) Local push denedik (başaramadık)
+
+Komut:
+
+docker push $IMAGE_URI
+
+Hata:
+
+connect: connection refused (443)
+
+Ne anlama geliyor?
+
+Bu bir “yetki yok” hatası değil.
+
+Cloud Shell’in bulunduğu ortamdan docker.pkg.dev’e giden network bağlantısında sorun/engelleme oldu.
+
+📌 Swarm karşılığı: “Benim makineden registry’ye erişim yok / firewall / network sorunu.”
+
+Bu sorunu nasıl çözdük?
+7) Plan B: “Build+Push işlemini Cloud Build’a devredelim”
+
+Mantık:
+
+“Ben push atamıyorsam, CI server yapsın.”
+
+GCP’de bu CI: Cloud Build
+
+Komut:
+
+gcloud builds submit --tag $IMAGE_URI .
+
+Ama ilk denemede:
+
+PERMISSION_DENIED
+
+7.1) Neden permission denied oldu?
+
+Cloud Build çalıştırmak ve registry’ye yazmak için IAM role gerekiyor.
+
+Sen “roles/owner” çıktığını gördün (owner’sın), sonra kendine rolleri verdik:
+
+roles/cloudbuild.builds.editor
+
+roles/artifactregistry.writer
+
+Not: Owner zaten yetki verir ama bazen servis bazlı kontrol için rolleri açıkça eklemek işleri netleştiriyor.
+
+8) Cloud Build, kaynak kodu GCS bucket’a atarken yeni hata çıktı
+
+Hata:
+
+Cloud Build staging bucket: gs://<project>_cloudbuild
+
+storage.objects.get yetkisi yok
+
+Neden?
+
+Build’in çalıştığı servis hesabı (service account), o bucket’ı okuyamıyordu.
+
+8.1) Çözüm
+
+Cloud Build bucket’ına şu iki service account’a objectViewer verdik:
+
+${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com
+
+${PROJECT_NUMBER}-compute@developer.gserviceaccount.com
+
+Komutlar:
+
+gcloud storage buckets add-iam-policy-binding ... --role roles/storage.objectViewer
+
+9) Push sırasında bir hata daha: Artifact Registry’ye uploadArtifacts denied
+
+Hata:
+
+artifactregistry.repositories.uploadArtifacts denied
+
+Neden?
+Cloud Build push’u sandığımız hesapla değil, şu hesapla yapıyormuş:
+
+9788881395-compute@developer.gserviceaccount.com
+
+Bunu tespit ettik:
+
+gcloud builds describe <build-id> --format="value(serviceAccount)"
+çıktısı compute SA’yı gösterdi.
+
+9.1) Çözüm
+
+Artifact Registry repo seviyesinde writer verdik:
+
+cloudbuild SA’ya ✅ (zaten verdin)
+
+compute SA’ya ✅ (asıl gereken buymuş)
+
+Komut:
+
+gcloud artifacts repositories add-iam-policy-binding xp-repo ... --member serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com --role roles/artifactregistry.writer
+
+10) Son deneme: Cloud Build başarılı
+
+Komut:
+
+gcloud builds submit --tag $IMAGE_URI .
+
+Sonuç:
+
+STATUS: SUCCESS
+
+Image registry’ye push edildi (layers “Pushed” gördük)
+
+Image artık hazır:
+✅ .../xp-repo/devops-test:v1
+
+Sonuç: Şu an ne kazandık?
+
+✅ Kubernetes’e deploy edebileceğimiz bir image var.
+✅ Bu image GCP Artifact Registry’de duruyor.
+✅ Bundan sonraki adımda Kubernetes “bu image’ı çek ve çalıştır” diyebilecek.
+
+Kısa özet (tek satır)
+
+“Kod → Docker image → registry’ye push → K8s deploy” zincirindeki image + registry kısmını tamamladık.
